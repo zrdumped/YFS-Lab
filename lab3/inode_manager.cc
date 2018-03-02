@@ -292,128 +292,114 @@ inode_manager::write_file(uint32_t inum, const char *buf, int size)
   /*
    * your lab1 code goes here.
    * note: write buf to blocks of inode inum.
-   * you need to consider the situation when the size of buf
+   * you need to consider the situation when the size of buf 
    * is larger or smaller than the size of original inode.
    * you should free some blocks if necessary.
    */
-  //printf("write file\n");
-  if(size < 0 || (uint32_t)size > BLOCK_SIZE * MAXFILE){
-    printf("\tim: error! size invalid\n");
+  struct inode *ino = get_inode(inum);
+  if(ino == NULL){
+    printf("write_file: no such inode %d\n", inum);
     return;
   }
-  inode_t* inode = get_inode(inum);
-   if(inode == NULL) {
-    printf("\tim: error! inode %d does not exist\n", inum);
+  unsigned int oldBlockNum = ino->size / BLOCK_SIZE;
+  oldBlockNum += (ino->size % BLOCK_SIZE != 0)? 1 : 0;
+  unsigned int newBlockNum = size / BLOCK_SIZE;
+  newBlockNum += (size % BLOCK_SIZE != 0)? 1 : 0;
+  if(newBlockNum > MAXFILE){
+    printf("write_file: no space \n");
     return;
-   }
-  unsigned int old_blocks_num = inode->size / BLOCK_SIZE + !!(inode->size % BLOCK_SIZE);
-  unsigned int new_blocks_num = size / BLOCK_SIZE + !!(size % BLOCK_SIZE);
-  //char block[BLOCK_SIZE];
-  char tail[BLOCK_SIZE];
-
-
-  if(old_blocks_num > new_blocks_num){
-    if(new_blocks_num > NDIRECT){
-      //printf("1free");
-      bm->read_block(inode->blocks[NDIRECT], tail);
-      for(unsigned int i = new_blocks_num; i < old_blocks_num; i++){
-        bm->free_block(*((blockid_t*)tail + (i - NDIRECT)));
+  }
+  //alloc
+  if(newBlockNum > oldBlockNum){
+    if(newBlockNum <= NDIRECT){
+      for(unsigned int i = oldBlockNum; i < newBlockNum; i++){
+        ino->blocks[i] = bm->alloc_block();
       }
     }
-    else if(old_blocks_num <= NDIRECT){
-      //printf("2free");
-      for(unsigned int i = new_blocks_num; i < old_blocks_num; i++){
-        bm->free_block(inode->blocks[i]);
+    else if(oldBlockNum > NDIRECT){
+      blockid_t extraBlocks[NINDIRECT];
+      bm->read_block(ino->blocks[NDIRECT], (char *)extraBlocks);
+      for(unsigned int i = oldBlockNum; i < newBlockNum; i++){
+        extraBlocks[i - NDIRECT] = bm->alloc_block();
+      }
+      bm->write_block(ino->blocks[NDIRECT], (char *)extraBlocks);
+    }
+    else{
+      for(unsigned int i = oldBlockNum; i < NDIRECT; i++){
+        ino->blocks[i] = bm->alloc_block();
+      }
+      ino->blocks[NDIRECT] = bm->alloc_block();
+      blockid_t extraBlocks[NINDIRECT];
+      for(unsigned int i = NDIRECT ; i < newBlockNum; i++){
+        extraBlocks[i - NDIRECT] = bm->alloc_block();
+      }
+      bm->write_block(ino->blocks[NDIRECT], (char *)extraBlocks);
+    }
+  }
+  //write
+  
+  char block[BLOCK_SIZE];
+  char indirect[BLOCK_SIZE];
+  int cur = 0;
+  for (int i = 0; i < NDIRECT && cur < size; ++i) {
+    if (size - cur > BLOCK_SIZE) {
+      bm->write_block(ino->blocks[i], buf + cur);
+      cur += BLOCK_SIZE;
+    } else {
+      int len = size - cur;
+      memcpy(block, buf + cur, len);
+      bm->write_block(ino->blocks[i], block);
+      cur += len;
+    }
+  }
+
+  if (cur < size) {
+    bm->read_block(ino->blocks[NDIRECT], indirect);
+    for (unsigned int i = 0; i < NINDIRECT && cur < size; ++i) {
+      blockid_t ix = *((blockid_t *)indirect + i);
+      if (size - cur > BLOCK_SIZE) {
+        bm->write_block(ix, buf + cur);
+        cur += BLOCK_SIZE;
+      } else {
+        int len = size - cur;
+        memcpy(block, buf + cur, len);
+        bm->write_block(ix, block);
+        cur += len;
+      }
+    }
+  }
+  //free
+  if(newBlockNum < oldBlockNum){
+    if(oldBlockNum < NDIRECT){
+      for(unsigned int i = newBlockNum; i < oldBlockNum; i++){
+        bm->free_block(ino->blocks[i]);
+      }
+    }
+    else if(newBlockNum > NDIRECT){
+      blockid_t extraBlocks[NINDIRECT];
+      bm->read_block(ino->blocks[NDIRECT], (char *)extraBlocks);
+      for(unsigned int i = newBlockNum ; i < oldBlockNum; i++){
+        bm->free_block(extraBlocks[i - NDIRECT]);
       }
     }
     else{
-      //printf("3free");
-      bm->read_block(inode->blocks[NDIRECT], tail);
-      for(unsigned int i = NDIRECT; i < old_blocks_num; i++){
-        bm->free_block(*((blockid_t*)tail + (i - NDIRECT)));
+      for(unsigned int i = newBlockNum; i < NDIRECT; i++){
+        bm->free_block(ino->blocks[i]);
       }
-      for(unsigned int i = new_blocks_num; i <= NDIRECT; i++){
-        bm->free_block(inode->blocks[i]);
+      blockid_t extraBlocks[NINDIRECT];
+      bm->read_block(ino->blocks[NDIRECT], (char *)extraBlocks);
+      for(unsigned int i = newBlockNum ; i < oldBlockNum; i++){
+        bm->free_block(extraBlocks[i - NDIRECT]);
       }
     }
   }
-
-  else if(new_blocks_num > old_blocks_num){
-    if(new_blocks_num <= NDIRECT){
-      printf("1alloc");
-      for(unsigned int i = old_blocks_num; i < new_blocks_num; i++){
-        inode->blocks[i]=bm->alloc_block();
-      }
-    }
-    else if(old_blocks_num > NDIRECT){
-      printf("2alloc");
-      bm->read_block(inode->blocks[NDIRECT], tail);
-      for(unsigned int i = old_blocks_num; i < new_blocks_num; i++){
-        *((blockid_t*)tail + (i - NDIRECT)) = bm->alloc_block();
-      }
-      bm->write_block(inode->blocks[NDIRECT], tail);
-    }
-    else{
-      printf("3alloc");
-      for(unsigned int i = old_blocks_num; i <= NDIRECT; i++){
-        inode->blocks[i] = bm->alloc_block();
-      }
-      printf("4alloc");
-      bzero(tail, BLOCK_SIZE);
-      for(unsigned int i = NDIRECT; i < new_blocks_num; i++){
-        *((blockid_t*)tail + (i - NDIRECT)) = bm->alloc_block();
-      }
-      bm->write_block(inode->blocks[NDIRECT], tail);
-    }
-  }
-  printf("5alloc\n");
-  unsigned int new_blocks_num_no_tail = size / BLOCK_SIZE;
-  unsigned int i = 0;
-  for(; i < NDIRECT && i < new_blocks_num_no_tail; i++)
-    bm->write_block(inode->blocks[i], buf + BLOCK_SIZE * i);
-  printf("6alloc\n");
-  if(i == NDIRECT && i < new_blocks_num_no_tail){
-    bm->read_block(inode->blocks[NDIRECT], tail);
-    for(; i <= (NINDIRECT + NDIRECT)  && i < new_blocks_num_no_tail; i++)
-      bm->write_block(*((blockid_t*)tail + (i - NDIRECT)), buf + BLOCK_SIZE * i);
-  }
-  printf("7alloc\n");
-
-  int tail_len = size % BLOCK_SIZE;
-  char buffer[BLOCK_SIZE];
-  bzero(buffer, BLOCK_SIZE);
-  if(new_blocks_num == 0){
-    printf("7.2alloc\n");
-    bm->write_block(inode->blocks[0], buffer);
-    printf("7.5alloc\n");
-  }
-  else if(tail_len != 0 ){
-    printf("7.6alloc\n");
-    memcpy(buffer, buf + (new_blocks_num - 1) * BLOCK_SIZE, tail_len);
-    if(i < NDIRECT){
-      printf("7.7alloc\n");
-      bm->write_block(inode->blocks[i], buffer);
-      //bm->write_block(inode->blocks[i], buf + (new_blocks_num - 1) * BLOCK_SIZE);
-    }
-    else{
-      printf("7.75alloc\n");
-      bm->write_block(*((blockid_t*)tail + (i - NDIRECT)), buffer);
-      //bm->write_block(*((blockid_t*)tail + (i - NDIRECT)), buf + (new_blocks_num - 1) * BLOCK_SIZE);
-    }
-    printf("7.8alloc\n");
-  }
-  printf("8alloc\n");
-  //printf("%s", buf);
-  inode->size = size;
-  inode->mtime = time(0);
-  inode->ctime = time(0);
-  //if(inode == NULL) printf("error1\n");
-  put_inode(inum, inode);
-  printf("5b4free\n");
-  //if(inode != NULL) printf("error2\n");
-  free(inode);
-  printf("9alloc\n");
-  return;
+  ino->size = size;
+  ino->atime = time(0);
+  ino->mtime = time(0);
+  ino->ctime = time(0);
+  put_inode(inum, ino);
+  free(ino);
+  printf("write_file: succeed %d\n", inum);
 }
 
 
